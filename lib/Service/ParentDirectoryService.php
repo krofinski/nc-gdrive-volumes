@@ -4,8 +4,15 @@ declare(strict_types=1);
 
 namespace OCA\GDriveVolumes\Service;
 
+use OCA\GDriveVolumes\Mount\GDriveMountProvider;
+use OCP\EventDispatcher\IEventDispatcher;
+use OCP\Files\Cache\IScanner;
+use OCP\Files\Config\IUserMountCache;
+use OCP\Files\Events\InvalidateMountCacheEvent;
 use OCP\Files\Folder;
 use OCP\Files\IRootFolder;
+use OCP\Files\Mount\IMountManager;
+use OCP\Files\Storage\IStorageFactory;
 use OCP\IGroupManager;
 use OCP\IUser;
 use OCP\IUserManager;
@@ -13,8 +20,8 @@ use Psr\Log\LoggerInterface;
 
 /**
  * Ensures common local parent directories (e.g. /Gdrive) exist inside users'
- * Nextcloud home folders so mounted volume subdirectories (e.g. Gdrive/Volume_1,
- * Gdrive/Volume_2) appear cleanly in Files and WebDAV.
+ * Nextcloud home folders and synchronizes/warms mounted Google Drive volumes so
+ * subdirectories (e.g. Gdrive/Volume_1, Gdrive/Volume_2) appear cleanly in Files and WebDAV.
  */
 class ParentDirectoryService {
     /** @var array<string, bool> */
@@ -25,26 +32,131 @@ class ParentDirectoryService {
         private readonly ConfigService $configService,
         private readonly IUserManager $userManager,
         private readonly IGroupManager $groupManager,
+        private readonly IMountManager $mountManager,
+        private readonly IUserMountCache $userMountCache,
+        private readonly IStorageFactory $storageFactory,
+        private readonly GDriveMountProvider $mountProvider,
+        private readonly IEventDispatcher $eventDispatcher,
         private readonly LoggerInterface $logger,
     ) {
     }
 
     /**
-     * Ensure all required common local parent directories exist for a user.
+     * Ensure all required common local parent directories exist for a user and keep mounts synced.
      */
-    public function ensureForUser(IUser $user): void {
+    public function ensureForUser(IUser $user, bool $forceScan = false): void {
         $uid = $user->getUID();
-        if (isset($this->ensuredUsersInRequest[$uid])) {
+        if (!$forceScan && isset($this->ensuredUsersInRequest[$uid])) {
             return;
         }
         $this->ensuredUsersInRequest[$uid] = true;
 
+        $this->syncAndWarmUserMounts($user, $forceScan);
+    }
+
+    /**
+     * Synchronize GDrive mount points into oc_mounts (repairing stale root_id/storage_id rows)
+     * and perform shallow root scans when unscanned or forced.
+     */
+    public function syncAndWarmUserMounts(IUser $user, bool $forceScan = false): void {
+        $uid = $user->getUID();
         $volumes = $this->configService->getActiveVolumesForUser($user);
         foreach ($volumes as $volume) {
             $parentDir = (string)($volume['local_parent_dir'] ?? '');
             if ($parentDir !== '') {
                 $this->ensurePathForUid($uid, $parentDir);
             }
+        }
+
+        try {
+            $mounts = $this->mountProvider->getMountsForUser($user, $this->storageFactory);
+            if ($mounts === []) {
+                return;
+            }
+
+            $cachedMounts = $this->userMountCache->getMountsForUser($user);
+            $cachedByMountPoint = [];
+            foreach ($cachedMounts as $cachedMount) {
+                $cachedByMountPoint[$cachedMount->getMountPoint()] = $cachedMount;
+            }
+
+            $repairedMountPoints = [];
+            $cacheNeedsClear = false;
+
+            foreach ($mounts as $mp) {
+                $mountPoint = $mp->getMountPoint();
+                try {
+                    $storage = $mp->getStorage();
+                    if ($storage === null) {
+                        continue;
+                    }
+                    // Ensure '' root cache entry exists in oc_filecache before reading root_id/storage_id
+                    $storage->getCache('');
+                    $rootId = $mp->getStorageRootId();
+                    $numericStorageId = $mp->getNumericStorageId();
+
+                    if (!isset($cachedByMountPoint[$mountPoint])) {
+                        $repairedMountPoints[$mountPoint] = true;
+                    } else {
+                        $existingCached = $cachedByMountPoint[$mountPoint];
+                        if ($existingCached->getRootId() !== $rootId || $existingCached->getStorageId() !== $numericStorageId) {
+                            $this->userMountCache->removeUserStorageMount($existingCached->getStorageId(), $uid);
+                            if (method_exists($this->userMountCache, 'removeMount')) {
+                                $this->userMountCache->removeMount($mountPoint, $user);
+                            }
+                            $cacheNeedsClear = true;
+                            $repairedMountPoints[$mountPoint] = true;
+                        }
+                    }
+
+                    $this->mountManager->addMount($mp);
+                } catch (\Throwable $e) {
+                    $this->logger->warning('Unable to prepare Google Drive mount "{mount}" for user "{uid}": {msg}', [
+                        'mount' => $mountPoint,
+                        'uid' => $uid,
+                        'msg' => $e->getMessage(),
+                    ]);
+                }
+            }
+
+            if ($cacheNeedsClear) {
+                $this->userMountCache->clear();
+            }
+
+            $this->userMountCache->registerMounts($user, $mounts, [GDriveMountProvider::class]);
+
+            if ($repairedMountPoints !== [] || $forceScan) {
+                $this->eventDispatcher->dispatchTyped(new InvalidateMountCacheEvent($user));
+            }
+
+            foreach ($mounts as $mp) {
+                $mountPoint = $mp->getMountPoint();
+                try {
+                    $storage = $mp->getStorage();
+                    if ($storage === null) {
+                        continue;
+                    }
+                    $rootEntry = $storage->getCache('')->get('');
+                    $needsInitialScan = !$rootEntry
+                        || (int)($rootEntry['size'] ?? -1) === -1
+                        || isset($repairedMountPoints[$mountPoint]);
+
+                    if ($forceScan || $needsInitialScan) {
+                        $storage->getScanner()->scan('', IScanner::SCAN_SHALLOW);
+                    }
+                } catch (\Throwable $e) {
+                    $this->logger->debug('Unable to shallow-scan Google Drive mount "{mount}" for user "{uid}": {msg}', [
+                        'mount' => $mountPoint,
+                        'uid' => $uid,
+                        'msg' => $e->getMessage(),
+                    ]);
+                }
+            }
+        } catch (\Throwable $e) {
+            $this->logger->warning('Unable to synchronize Google Drive mounts for user "{uid}": {msg}', [
+                'uid' => $uid,
+                'msg' => $e->getMessage(),
+            ]);
         }
     }
 
@@ -66,7 +178,7 @@ class ParentDirectoryService {
 
     /**
      * Warm the parent directory and mounted volume node for target users so both
-     * /Gdrive and /Gdrive/Volume_1 are immediately registered in Nextcloud's filecache and oc_mounts.
+     * /Gdrive and /Gdrive/Volume_1 are immediately registered and scanned in Nextcloud.
      *
      * @param array<string, mixed> $volume
      */
@@ -75,20 +187,13 @@ class ParentDirectoryService {
             return;
         }
 
-        $parentDir = trim((string)($volume['local_parent_dir'] ?? ''), '/');
         $mountPath = trim((string)($volume['local_mount_path'] ?? ''), '/');
 
         foreach ($this->collectTargetUids($volume, $actingUid) as $uid) {
             try {
-                if ($parentDir !== '') {
-                    $this->ensurePathForUid($uid, $parentDir);
-                }
-                $userFolder = $this->rootFolder->getUserFolder($uid);
-                if ($parentDir !== '' && $userFolder->nodeExists($parentDir)) {
-                    $userFolder->get($parentDir);
-                }
-                if ($mountPath !== '' && $userFolder->nodeExists($mountPath)) {
-                    $userFolder->get($mountPath);
+                $user = $this->userManager->get($uid);
+                if ($user !== null) {
+                    $this->syncAndWarmUserMounts($user, true);
                 }
             } catch (\Throwable $e) {
                 $this->logger->debug('Unable to warm volume mount "{path}" for user "{uid}": {msg}', [

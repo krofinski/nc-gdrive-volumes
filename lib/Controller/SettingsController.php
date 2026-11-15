@@ -50,6 +50,10 @@ class SettingsController extends Controller {
     public function getState(string $scope): DataResponse {
         try {
             [$validScope, $ownerUid] = $this->assertScopeAccess($scope);
+            $currentUser = $this->userSession->getUser();
+            if ($currentUser !== null) {
+                $this->parentDirectoryService->ensureForUser($currentUser, true);
+            }
 
             $availableGroups = [];
             $availableUsers = [];
@@ -160,6 +164,11 @@ class SettingsController extends Controller {
                 );
             } catch (Throwable) {
                 $rootFolders = [];
+            }
+
+            $currentUser = $this->userSession->getUser();
+            if ($currentUser !== null) {
+                $this->parentDirectoryService->ensureForUser($currentUser, true);
             }
 
             return new DataResponse([
@@ -299,6 +308,9 @@ class SettingsController extends Controller {
             $this->invalidateMountCache($validScope === ConfigService::SCOPE_PERSONAL ? $ownerUid : null);
             $this->parentDirectoryService->ensureForVolume($volume, $currentUid);
             $this->parentDirectoryService->warmVolumeMount($volume, $currentUid);
+            if ($currentUser !== null) {
+                $this->parentDirectoryService->ensureForUser($currentUser, true);
+            }
 
             return new DataResponse([
                 'ok' => true,
@@ -326,6 +338,10 @@ class SettingsController extends Controller {
                 $this->cacheService->invalidateNamespace(MetadataCacheService::volumeNamespace((string)$vol['id']));
             }
             $this->invalidateMountCache($validScope === ConfigService::SCOPE_PERSONAL ? $ownerUid : null);
+            $currentUser = $this->userSession->getUser();
+            if ($currentUser !== null) {
+                $this->parentDirectoryService->ensureForUser($currentUser, true);
+            }
             return new DataResponse(['cleared' => true]);
         } catch (Throwable $e) {
             return $this->errorResponse($e);
@@ -354,6 +370,10 @@ class SettingsController extends Controller {
             $this->invalidateMountCache($validScope === ConfigService::SCOPE_PERSONAL ? $ownerUid : null);
             $this->parentDirectoryService->ensureForVolume($volume, $currentUid);
             $this->parentDirectoryService->warmVolumeMount($volume, $currentUid);
+            $currentUser = $this->userSession->getUser();
+            if ($currentUser !== null) {
+                $this->parentDirectoryService->ensureForUser($currentUser, true);
+            }
 
             return new DataResponse([
                 'volume' => $volume,

@@ -10,7 +10,6 @@ use OCA\GDriveVolumes\Service\ConfigService;
 use OCA\GDriveVolumes\Service\MetadataCacheService;
 use OCA\GDriveVolumes\Storage\GDriveVolumeStorage;
 use OCP\Files\Config\IMountProvider;
-use OCP\Files\Mount\IMountManager;
 use OCP\Files\Mount\IMountPoint;
 use OCP\Files\Storage\IStorageFactory;
 use OCP\IUser;
@@ -25,7 +24,6 @@ class GDriveMountProvider implements IMountProvider {
         private readonly ConfigService $configService,
         private readonly GoogleDriveClient $driveClient,
         private readonly MetadataCacheService $cacheService,
-        private readonly IMountManager $mountManager,
         private readonly LoggerInterface $logger,
     ) {
     }
@@ -41,8 +39,6 @@ class GDriveMountProvider implements IMountProvider {
 
         $mounts = [];
         $uid = $user->getUID();
-        $homeMount = $this->mountManager->find('/' . $uid . '/files');
-        $ensuredParents = [];
 
         foreach ($volumes as $volume) {
             $localMountPath = trim((string)($volume['local_mount_path'] ?? ''), '/');
@@ -55,12 +51,6 @@ class GDriveMountProvider implements IMountProvider {
             $account = $this->configService->getPublicAccountSummary($scope, $ownerUid);
             if (empty($account['connected'])) {
                 continue;
-            }
-
-            $parentDir = trim((string)($volume['local_parent_dir'] ?? ''), '/');
-            if ($parentDir !== '' && !isset($ensuredParents[$parentDir]) && $homeMount !== null) {
-                $ensuredParents[$parentDir] = true;
-                $this->ensureHomeParentDirectory($homeMount, '/' . $uid . '/files/' . $parentDir);
             }
 
             $mountPointPath = '/' . $uid . '/files/' . $localMountPath;
@@ -83,6 +73,7 @@ class GDriveMountProvider implements IMountProvider {
                     'previews' => true,
                     'enable_sharing' => true,
                     'readonly' => (bool)($volume['read_only'] ?? false),
+                    'filesystem_check_changes' => 1,
                 ],
                 null,
                 self::class
@@ -90,32 +81,5 @@ class GDriveMountProvider implements IMountProvider {
         }
 
         return $mounts;
-    }
-
-    private function ensureHomeParentDirectory(IMountPoint $homeMount, string $fullParentPath): void {
-        try {
-            $homeStorage = $homeMount->getStorage();
-            if ($homeStorage === null) {
-                return;
-            }
-
-            $internalParent = trim($homeMount->getInternalPath($fullParentPath), '/');
-            if ($internalParent === '') {
-                return;
-            }
-
-            if (!$homeStorage->is_dir($internalParent)) {
-                $homeStorage->mkdir($internalParent);
-            }
-
-            if ($homeStorage->getCache()->getId($internalParent) === -1) {
-                $homeStorage->getScanner()->scanFile($internalParent);
-            }
-        } catch (\Throwable $e) {
-            $this->logger->debug('Unable to ensure home parent directory "{path}": {msg}', [
-                'path' => $fullParentPath,
-                'msg' => $e->getMessage(),
-            ]);
-        }
     }
 }

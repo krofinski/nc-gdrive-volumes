@@ -507,11 +507,14 @@ class ConfigService {
         );
         $localMountPath = $this->buildLocalMountPath($localParent, $localSub);
 
-        $remotePath = $this->normalizeRelativePath(
-            (string)($input['remote_path'] ?? ($existing['remote_path'] ?? '')),
-            true
-        );
+        $rawRemoteInput = trim((string)($input['remote_path'] ?? ($existing['remote_path'] ?? '')));
+        $remotePath = $this->normalizeRelativePath($rawRemoteInput, true);
         $remoteFolderId = trim((string)($input['remote_folder_id'] ?? ($existing['remote_folder_id'] ?? '')));
+
+        if ($remoteFolderId === '' && ($rawRemoteInput === '/' || strcasecmp($rawRemoteInput, 'root') === 0)) {
+            $remoteFolderId = 'root';
+            $remotePath = '';
+        }
 
         if ($remotePath === '' && $remoteFolderId === '') {
             throw new InvalidArgumentException('Provide either a Google Drive subdirectory path (e.g. NextCloud/Volume_1) or a Google Drive Folder ID.');

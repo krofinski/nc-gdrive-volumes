@@ -10,6 +10,7 @@ use OCA\GDriveVolumes\Service\ConfigService;
 use OCA\GDriveVolumes\Service\MetadataCacheService;
 use OCP\Constants;
 use OCP\Files\Cache\ICache;
+use OCP\Files\Cache\IWatcher;
 use OCP\Files\FileInfo;
 use OCP\Files\Storage\IStorage;
 use Psr\Log\LoggerInterface;
@@ -85,7 +86,7 @@ class GDriveVolumeStorage extends Common {
                     $cache->put('', [
                         'mimetype' => 'httpd/unix-directory',
                         'mtime' => $now,
-                        'storage_mtime' => $now,
+                        'storage_mtime' => 0,
                         'size' => -1,
                         'etag' => substr(md5($this->getId() . ':init'), 0, 16),
                         'permissions' => $this->readOnly
@@ -101,6 +102,12 @@ class GDriveVolumeStorage extends Common {
             }
         }
         return $cache;
+    }
+
+    public function getWatcher($path = '', $storage = null): IWatcher {
+        $watcher = parent::getWatcher($path, $storage);
+        $watcher->setPolicy(IWatcher::CHECK_ONCE);
+        return $watcher;
     }
 
     public function test(): bool {
@@ -234,10 +241,74 @@ class GDriveVolumeStorage extends Common {
         }
     }
 
+    public function getDirectoryContent($directory): \Traversable {
+        $normalized = $this->normalizePath((string)$directory);
+        $folderId = $this->resolveFolderId($normalized);
+        if ($folderId === null) {
+            return;
+        }
+
+        $entries = $this->getFolderChildrenMap($normalized, $folderId);
+        $ttl = $this->getCacheTtl();
+
+        foreach ($entries as $name => $item) {
+            $childName = (string)$name;
+            if ($childName === '') {
+                continue;
+            }
+            $childPath = $normalized === '' ? $childName : ($normalized . '/' . $childName);
+            $this->cacheService->set($this->cacheNs, 'item:' . $childPath, ['found' => true, 'item' => $item], $ttl);
+
+            $isDir = !empty($item['isDir']);
+            $isGoogleDoc = !empty($item['isGoogleDoc']);
+            $mtime = (int)($item['mtime'] ?? time());
+
+            if ($isDir) {
+                $mimetype = 'httpd/unix-directory';
+                $size = -1;
+            } else {
+                $mimetype = !empty($item['exportMimeType'])
+                    ? (string)$item['exportMimeType']
+                    : (!empty($item['mimeType']) ? (string)$item['mimeType'] : $this->detectMimeType($childName));
+                $size = $isGoogleDoc && empty($item['hasExplicitSize'])
+                    ? $this->getCachedGoogleDocExportSize($item)
+                    : (int)($item['size'] ?? 0);
+            }
+
+            if ($this->readOnly) {
+                $permissions = Constants::PERMISSION_READ | Constants::PERMISSION_SHARE;
+            } elseif ($isDir) {
+                $permissions = Constants::PERMISSION_ALL;
+            } elseif ($isGoogleDoc) {
+                $permissions = Constants::PERMISSION_READ | Constants::PERMISSION_SHARE;
+            } else {
+                $permissions = Constants::PERMISSION_READ
+                    | Constants::PERMISSION_UPDATE
+                    | Constants::PERMISSION_DELETE
+                    | Constants::PERMISSION_SHARE;
+            }
+
+            yield [
+                'name' => $childName,
+                'mimetype' => $mimetype,
+                'mtime' => $mtime,
+                'storage_mtime' => $mtime,
+                'size' => $size,
+                'etag' => sha1(
+                    (string)($item['id'] ?? '')
+                    . ':' . (string)($item['version'] ?? '')
+                    . ':' . (string)($item['md5Checksum'] ?? '')
+                    . ':' . $mtime
+                ),
+                'permissions' => $permissions,
+            ];
+        }
+    }
+
     public function filetype($path): string|false {
         $normalized = $this->normalizePath((string)$path);
         if ($normalized === '') {
-            return $this->getRootFolderId() !== null ? 'dir' : false;
+            return 'dir';
         }
 
         $item = $this->resolveItem($normalized);
@@ -276,9 +347,14 @@ class GDriveVolumeStorage extends Common {
             if ($normalized === '') {
                 $rootMeta = $this->getRootFolderMetadata();
                 if ($rootMeta === null) {
-                    return false;
+                    return [
+                        'size' => 0,
+                        'mtime' => 0,
+                        'atime' => 0,
+                        'ctime' => 0,
+                    ];
                 }
-                $mtime = (int)($rootMeta['mtime'] ?? time());
+                $mtime = (int)($rootMeta['mtime'] ?? 0);
                 return [
                     'size' => 0,
                     'mtime' => $mtime,
@@ -293,8 +369,8 @@ class GDriveVolumeStorage extends Common {
             }
 
             $size = (int)($item['size'] ?? 0);
-            if (empty($item['isDir']) && !empty($item['isGoogleDoc']) && !$item['hasExplicitSize']) {
-                $size = $this->resolveGoogleDocExportSize($item);
+            if (empty($item['isDir']) && !empty($item['isGoogleDoc']) && empty($item['hasExplicitSize'])) {
+                $size = $this->getCachedGoogleDocExportSize($item);
             }
 
             $mtime = (int)($item['mtime'] ?? time());
@@ -340,14 +416,17 @@ class GDriveVolumeStorage extends Common {
         if ($normalized === '') {
             $root = $this->getRootFolderMetadata();
             if ($root === null) {
-                return false;
+                return substr(sha1($this->getId() . ':root'), 0, 16);
             }
-            return sha1(($root['id'] ?? 'root') . ':' . ($root['mtime'] ?? 0));
+            return $this->computeDirectoryEtag('', (string)$root['id'], (int)($root['mtime'] ?? 0));
         }
 
         $item = $this->resolveItem($normalized);
         if ($item === null) {
             return false;
+        }
+        if (!empty($item['isDir'])) {
+            return $this->computeDirectoryEtag($normalized, (string)$item['id'], (int)($item['mtime'] ?? 0));
         }
         return sha1(
             (string)$item['id']
@@ -358,11 +437,29 @@ class GDriveVolumeStorage extends Common {
     }
 
     public function hasUpdated($path, $time): bool {
-        $mtime = $this->filemtime($path);
-        if ($mtime === false) {
+        if ((int)$time <= 0) {
             return true;
         }
-        return $mtime > $time;
+
+        $normalized = $this->normalizePath((string)$path);
+        if ($normalized === '') {
+            $folderId = $this->getRootFolderId();
+            if ($folderId === null) {
+                return false;
+            }
+            return $this->hasDirectoryChildrenChanged('', $folderId);
+        }
+
+        $item = $this->resolveItem($normalized);
+        if ($item === null) {
+            return true;
+        }
+
+        if (!empty($item['isDir'])) {
+            return $this->hasDirectoryChildrenChanged($normalized, (string)$item['id']);
+        }
+
+        return (int)($item['mtime'] ?? 0) > (int)$time;
     }
 
     public function touch($path, $mtime = null): bool {
@@ -847,41 +944,72 @@ class GDriveVolumeStorage extends Common {
         return $map;
     }
 
+    private function computeDirectoryEtag(string $normalizedPath, string $folderId, int $folderMtime): string {
+        $parts = [$folderId . ':' . $folderMtime];
+        try {
+            $children = $this->getFolderChildrenMap($normalizedPath, $folderId);
+            foreach ($children as $name => $child) {
+                $parts[] = (string)$name
+                    . ':' . (string)($child['id'] ?? '')
+                    . ':' . (string)($child['version'] ?? '')
+                    . ':' . (string)($child['mtime'] ?? 0)
+                    . ':' . (string)($child['size'] ?? 0);
+            }
+        } catch (\Throwable) {
+        }
+        return sha1(implode('|', $parts));
+    }
+
+    private function hasDirectoryChildrenChanged(string $normalizedPath, string $folderId): bool {
+        try {
+            $childrenMap = $this->getFolderChildrenMap($normalizedPath, $folderId);
+            $cache = $this->getCache($normalizedPath);
+            $cachedEntry = $cache->get($normalizedPath);
+            if (!$cachedEntry || (int)($cachedEntry['size'] ?? -1) === -1) {
+                return true;
+            }
+
+            $cachedChildren = $cache->getFolderContentsById($cachedEntry->getId());
+            if (count($cachedChildren) !== count($childrenMap)) {
+                return true;
+            }
+
+            $cachedByName = [];
+            foreach ($cachedChildren as $cachedChild) {
+                $name = (string)($cachedChild['name'] ?? '');
+                if ($name !== '') {
+                    $cachedByName[$name] = $cachedChild;
+                }
+            }
+
+            foreach ($childrenMap as $name => $item) {
+                $key = (string)$name;
+                if (!isset($cachedByName[$key])) {
+                    return true;
+                }
+                $remoteMtime = (int)($item['mtime'] ?? 0);
+                $cachedStorageMtime = (int)($cachedByName[$key]['storage_mtime'] ?? 0);
+                if ($remoteMtime > $cachedStorageMtime) {
+                    return true;
+                }
+            }
+
+            return false;
+        } catch (\Throwable) {
+            return false;
+        }
+    }
+
     /**
      * @param array<string, mixed> $item
      */
-    private function resolveGoogleDocExportSize(array $item): int {
+    private function getCachedGoogleDocExportSize(array $item): int {
         $key = 'export_size:' . $item['id'] . ':' . ($item['version'] ?? '0') . ':' . $this->exportMode;
         $cached = $this->cacheService->get($this->cacheNs, $key);
         if (is_int($cached)) {
             return $cached;
         }
-
-        $exportMime = (string)($item['exportMimeType'] ?? '');
-        if ($exportMime === '') {
-            return 0;
-        }
-
-        $tmp = fopen('php://temp/maxmemory:4194304', 'w+b');
-        if ($tmp === false) {
-            return 0;
-        }
-
-        try {
-            $size = $this->driveClient->downloadToStream(
-                $this->scope,
-                $this->ownerUid,
-                (string)$item['id'],
-                $tmp,
-                $exportMime
-            );
-            $this->cacheService->set($this->cacheNs, $key, $size, 86400);
-            return $size;
-        } catch (\Throwable) {
-            return 0;
-        } finally {
-            fclose($tmp);
-        }
+        return (int)($item['size'] ?? 0);
     }
 
     /**
