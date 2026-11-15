@@ -47,6 +47,28 @@ class ConfigService {
     }
 
     /**
+     * Ensure Nextcloud's oc_appconfig marks gdrive_volumes as a "filesystem" app
+     * and keeps installed_version aligned with APP_VERSION so remote.php (WebDAV)
+     * always loads and boots this app even when updated via git pull.
+     */
+    public function ensureAppMetadataSynced(): void {
+        $currentTypes = $this->config->getAppValue(Application::APP_ID, 'types', '');
+        $typesList = array_values(array_filter(
+            array_map('trim', explode(',', $currentTypes)),
+            static fn (string $t): bool => $t !== ''
+        ));
+        if (!in_array('filesystem', $typesList, true)) {
+            $typesList[] = 'filesystem';
+            $this->config->setAppValue(Application::APP_ID, 'types', implode(',', $typesList));
+        }
+
+        $installedVersion = $this->config->getAppValue(Application::APP_ID, 'installed_version', '');
+        if ($installedVersion !== '' && $installedVersion !== Application::APP_VERSION) {
+            $this->config->setAppValue(Application::APP_ID, 'installed_version', Application::APP_VERSION);
+        }
+    }
+
+    /**
      * Validate and return scope string.
      */
     public function validateScope(string $scope): string {
