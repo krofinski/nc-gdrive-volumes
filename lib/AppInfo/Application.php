@@ -6,6 +6,7 @@ namespace OCA\GDriveVolumes\AppInfo;
 
 use OCA\GDriveVolumes\Listener\EnsureParentDirectoryListener;
 use OCA\GDriveVolumes\Mount\GDriveMountProvider;
+use OCA\GDriveVolumes\Service\ConfigService;
 use OCP\AppFramework\App;
 use OCP\AppFramework\Bootstrap\IBootContext;
 use OCP\AppFramework\Bootstrap\IBootstrap;
@@ -16,6 +17,7 @@ use OCP\User\Events\PostLoginEvent;
 
 class Application extends App implements IBootstrap {
     public const APP_ID = 'gdrive_volumes';
+    public const APP_VERSION = '1.0.6';
 
     public function __construct() {
         parent::__construct(self::APP_ID);
@@ -30,7 +32,9 @@ class Application extends App implements IBootstrap {
         $context->injectFn(function (
             IMountProviderCollection $mountProviderCollection,
             GDriveMountProvider $mountProvider,
+            ConfigService $configService,
         ): void {
+            $configService->ensureAppMetadataSynced();
             $mountProviderCollection->registerProvider($mountProvider);
         });
     }
