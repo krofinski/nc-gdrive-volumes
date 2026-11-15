@@ -75,6 +75,7 @@ class MountVolumeCommand extends Command {
             }
 
             $this->parentDirectoryService->ensureForVolume($volume, $uid);
+            $this->parentDirectoryService->warmVolumeMount($volume, $uid);
             $output->writeln(sprintf(
                 '<info>Mounted volume "%s" (%s) -> /%s</info>',
                 $volume['name'],
