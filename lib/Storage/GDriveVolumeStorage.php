@@ -37,6 +37,7 @@ class GDriveVolumeStorage extends Common {
     private string $cacheNs;
     private ?string $resolvedRootId = null;
     private bool $rootCacheSeeded = false;
+    private int|float|null $cachedFreeSpace = null;
 
     /**
      * @param array<string, mixed> $params
@@ -354,7 +355,7 @@ class GDriveVolumeStorage extends Common {
                         'ctime' => 0,
                     ];
                 }
-                $mtime = (int)($rootMeta['mtime'] ?? 0);
+                $mtime = max(1, (int)($rootMeta['mtime'] ?? time()));
                 return [
                     'size' => 0,
                     'mtime' => $mtime,
@@ -777,21 +778,27 @@ class GDriveVolumeStorage extends Common {
         if ($this->readOnly) {
             return 0;
         }
+        if ($this->cachedFreeSpace !== null) {
+            return $this->cachedFreeSpace;
+        }
 
         try {
             if ($this->quotaBytes !== null && $this->quotaBytes > 0) {
                 $used = $this->getVolumeUsedBytes();
-                return max(0, $this->quotaBytes - $used);
+                $this->cachedFreeSpace = max(0, $this->quotaBytes - $used);
+                return $this->cachedFreeSpace;
             }
 
             $about = $this->driveClient->getAboutInfo($this->scope, $this->ownerUid, true);
             $quota = $about['storageQuota'] ?? [];
             if (!isset($quota['limit']) || (int)$quota['limit'] <= 0) {
-                return FileInfo::SPACE_UNLIMITED;
+                $this->cachedFreeSpace = FileInfo::SPACE_UNLIMITED;
+                return $this->cachedFreeSpace;
             }
             $limit = (int)$quota['limit'];
             $usage = (int)($quota['usage'] ?? 0);
-            return max(0, $limit - $usage);
+            $this->cachedFreeSpace = max(0, $limit - $usage);
+            return $this->cachedFreeSpace;
         } catch (\Throwable) {
             return FileInfo::SPACE_UNKNOWN;
         }
@@ -900,8 +907,10 @@ class GDriveVolumeStorage extends Common {
      * @return array<string, array<string, mixed>>
      */
     private function getFolderChildrenMap(string $folderPath, string $folderId): array {
+        $ttl = $this->getCacheTtl();
         $cached = $this->cacheService->get($this->cacheNs, 'children:' . $folderId);
         if (is_array($cached)) {
+            $this->populateChildItemCache($folderPath, $cached, $ttl);
             return $cached;
         }
 
@@ -910,16 +919,20 @@ class GDriveVolumeStorage extends Common {
 
         foreach ($rawChildren as $item) {
             $mime = (string)$item['mimeType'];
+            $sanitizedBase = str_replace(['/', '\\'], '_', (string)$item['name']);
+            if ($sanitizedBase === '' || $sanitizedBase === '.' || $sanitizedBase === '..') {
+                continue;
+            }
+
             if (GoogleDriveClient::isGoogleWorkspaceFile($mime)) {
                 $export = GoogleDriveClient::getGoogleExportTarget($mime, $this->exportMode);
                 if ($export === null) {
                     continue;
                 }
-                $baseName = (string)$item['name'];
                 $suffix = '.' . $export['ext'];
-                $virtualName = str_ends_with(strtolower($baseName), $suffix)
-                    ? $baseName
-                    : ($baseName . $suffix);
+                $virtualName = str_ends_with(strtolower($sanitizedBase), $suffix)
+                    ? $sanitizedBase
+                    : ($sanitizedBase . $suffix);
 
                 $item['isGoogleDoc'] = true;
                 $item['exportMimeType'] = $export['mime'];
@@ -932,16 +945,33 @@ class GDriveVolumeStorage extends Common {
 
             $item['isGoogleDoc'] = false;
             $item['exportMimeType'] = null;
-            $name = (string)$item['name'];
-            if ($name !== '' && !isset($map[$name])) {
-                $map[$name] = $item;
+            if (!isset($map[$sanitizedBase])) {
+                $map[$sanitizedBase] = $item;
             }
         }
 
-        $ttl = $this->getCacheTtl();
         $this->cacheService->set($this->cacheNs, 'children:' . $folderId, $map, $ttl);
         $this->cacheService->set($this->cacheNs, 'children_path:' . $folderPath, array_keys($map), $ttl);
+        $this->populateChildItemCache($folderPath, $map, $ttl);
         return $map;
+    }
+
+    /**
+     * Populate per-path item cache entries so subsequent resolveItem() lookups avoid re-walking parents.
+     *
+     * @param array<string, array<string, mixed>> $entries
+     */
+    private function populateChildItemCache(string $folderPath, array $entries, int $ttl): void {
+        foreach ($entries as $name => $entry) {
+            $childName = (string)$name;
+            if ($childName === '') {
+                continue;
+            }
+            $childPath = $folderPath === '' ? $childName : ($folderPath . '/' . $childName);
+            if ($this->cacheService->get($this->cacheNs, 'item:' . $childPath) === null) {
+                $this->cacheService->set($this->cacheNs, 'item:' . $childPath, ['found' => true, 'item' => $entry], $ttl);
+            }
+        }
     }
 
     private function computeDirectoryEtag(string $normalizedPath, string $folderId, int $folderMtime): string {
@@ -1026,13 +1056,24 @@ class GDriveVolumeStorage extends Common {
             return $cached;
         }
 
-        $rootId = $this->getRootFolderId();
-        if ($rootId === null) {
-            return 0;
+        $used = 0;
+        try {
+            $cache = $this->getCache('');
+            $rootEntry = $cache->get('');
+            if ($rootEntry) {
+                if ((int)($rootEntry['size'] ?? -1) >= 0) {
+                    $used = (int)$rootEntry['size'];
+                } else {
+                    foreach ($cache->getFolderContentsById($rootEntry->getId()) as $child) {
+                        $used += max(0, (int)($child['size'] ?? 0));
+                    }
+                }
+            }
+        } catch (\Throwable) {
+            $used = 0;
         }
 
-        $used = $this->driveClient->calculateFolderUsageBytes($this->scope, $this->ownerUid, $rootId);
-        $this->cacheService->set($this->cacheNs, 'usage:' . $this->cacheNs, $used, max(120, $this->getCacheTtl()));
+        $this->cacheService->set($this->cacheNs, 'usage:' . $this->cacheNs, $used, max(60, $this->getCacheTtl()));
         return $used;
     }
 
