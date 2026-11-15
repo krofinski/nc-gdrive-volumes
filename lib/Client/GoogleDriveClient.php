@@ -67,19 +67,13 @@ class GoogleDriveClient {
             throw new RuntimeException('Client ID and Client Secret must be configured before connecting.');
         }
 
-        $client = $this->clientService->newClient();
-        $response = $client->post(self::TOKEN_URL, [
-            'form_params' => [
-                'code' => $code,
-                'client_id' => $account['client_id'],
-                'client_secret' => $account['client_secret'],
-                'redirect_uri' => $redirectUri,
-                'grant_type' => 'authorization_code',
-            ],
-            'timeout' => 30,
-        ]);
-
-        $tokenData = $this->decodeJsonResponse($response->getBody(), 'OAuth token exchange');
+        $tokenData = $this->postFormUrlEncoded(self::TOKEN_URL, [
+            'code' => $code,
+            'client_id' => $account['client_id'],
+            'client_secret' => $account['client_secret'],
+            'redirect_uri' => $redirectUri,
+            'grant_type' => 'authorization_code',
+        ], 'OAuth token exchange');
         if (empty($tokenData['access_token'])) {
             throw new RuntimeException('Google OAuth response did not include an access_token.');
         }
@@ -816,18 +810,12 @@ class GoogleDriveClient {
             throw new RuntimeException('Google Drive OAuth account is not connected or missing refresh token.');
         }
 
-        $client = $this->clientService->newClient();
-        $response = $client->post(self::TOKEN_URL, [
-            'form_params' => [
-                'client_id' => $account['client_id'],
-                'client_secret' => $account['client_secret'],
-                'refresh_token' => $account['refresh_token'],
-                'grant_type' => 'refresh_token',
-            ],
-            'timeout' => 30,
-        ]);
-
-        $tokenData = $this->decodeJsonResponse($response->getBody(), 'OAuth token refresh');
+        $tokenData = $this->postFormUrlEncoded(self::TOKEN_URL, [
+            'client_id' => $account['client_id'],
+            'client_secret' => $account['client_secret'],
+            'refresh_token' => $account['refresh_token'],
+            'grant_type' => 'refresh_token',
+        ], 'OAuth token refresh');
         if (empty($tokenData['access_token'])) {
             throw new RuntimeException('Failed to refresh Google Drive OAuth access token.');
         }
@@ -876,16 +864,10 @@ class GoogleDriveClient {
 
         $assertion = $signingInput . '.' . $this->base64UrlEncode($signature);
 
-        $client = $this->clientService->newClient();
-        $response = $client->post($tokenUri, [
-            'form_params' => [
-                'grant_type' => 'urn:ietf:params:oauth:grant-type:jwt-bearer',
-                'assertion' => $assertion,
-            ],
-            'timeout' => 30,
-        ]);
-
-        $tokenData = $this->decodeJsonResponse($response->getBody(), 'Service account token request');
+        $tokenData = $this->postFormUrlEncoded($tokenUri, [
+            'grant_type' => 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+            'assertion' => $assertion,
+        ], 'Service account token request');
         if (empty($tokenData['access_token'])) {
             throw new RuntimeException('Google Service Account token response did not include an access_token.');
         }
@@ -999,6 +981,26 @@ class GoogleDriveClient {
             'parents' => is_array($raw['parents'] ?? null) ? $raw['parents'] : [],
             'trashed' => (bool)($raw['trashed'] ?? false),
         ];
+    }
+
+    /**
+     * Post a form-urlencoded request and decode the JSON response.
+     *
+     * @param array<string, string> $params
+     * @return array<string, mixed>
+     */
+    private function postFormUrlEncoded(string $url, array $params, string $context): array {
+        $client = $this->clientService->newClient();
+        $response = $client->post($url, [
+            'headers' => [
+                'Content-Type' => 'application/x-www-form-urlencoded',
+            ],
+            'body' => http_build_query($params, '', '&', PHP_QUERY_RFC3986),
+            'http_errors' => false,
+            'timeout' => 30,
+        ]);
+
+        return $this->decodeJsonResponse($response->getBody(), $context);
     }
 
     /**

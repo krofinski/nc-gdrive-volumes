@@ -36,6 +36,7 @@ class ConfigService {
     private const KEY_ACCOUNT_PERSONAL = 'personal_account';
     private const KEY_VOLUMES_PERSONAL = 'personal_volumes';
     private const KEY_HAS_PERSONAL_VOLUMES = 'has_personal_volumes';
+    private const KEY_OAUTH_STATES = 'oauth_states';
 
     public function __construct(
         private readonly IConfig $config,
@@ -260,6 +261,72 @@ class ConfigService {
             }
             $this->config->setUserValue($uid, Application::APP_ID, self::KEY_ACCOUNT_PERSONAL, $encrypted);
         }
+    }
+
+    /**
+     * Persist a one-time OAuth state nonce in app config so callbacks work even without Redis/APCu.
+     *
+     * @param array<string, mixed> $payload
+     */
+    public function saveOAuthState(string $nonce, array $payload): void {
+        if ($nonce === '') {
+            return;
+        }
+        $cutoff = time() - 600;
+        $states = $this->readPrunedOAuthStates($cutoff);
+        if (!isset($payload['created'])) {
+            $payload['created'] = time();
+        }
+        $states[$nonce] = $payload;
+        $this->config->setAppValue(
+            Application::APP_ID,
+            self::KEY_OAUTH_STATES,
+            (string)json_encode($states, JSON_THROW_ON_ERROR)
+        );
+    }
+
+    /**
+     * Retrieve and remove a one-time OAuth state nonce from app config if still valid.
+     *
+     * @return array<string, mixed>|null
+     */
+    public function consumeOAuthState(string $nonce): ?array {
+        if ($nonce === '') {
+            return null;
+        }
+        $states = $this->readPrunedOAuthStates(time() - 600);
+        if ($states === []) {
+            return null;
+        }
+
+        $matched = $states[$nonce] ?? null;
+        unset($states[$nonce]);
+
+        $this->config->setAppValue(
+            Application::APP_ID,
+            self::KEY_OAUTH_STATES,
+            (string)json_encode($states, JSON_THROW_ON_ERROR)
+        );
+
+        return $matched;
+    }
+
+    /**
+     * @return array<string, array<string, mixed>>
+     */
+    private function readPrunedOAuthStates(int $cutoff): array {
+        $raw = $this->config->getAppValue(Application::APP_ID, self::KEY_OAUTH_STATES, '{}');
+        $decoded = json_decode($raw, true);
+        if (!is_array($decoded)) {
+            return [];
+        }
+        $pruned = [];
+        foreach ($decoded as $key => $entry) {
+            if (is_string($key) && is_array($entry) && (int)($entry['created'] ?? 0) >= $cutoff) {
+                $pruned[$key] = $entry;
+            }
+        }
+        return $pruned;
     }
 
     /**

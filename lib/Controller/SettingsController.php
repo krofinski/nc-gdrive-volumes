@@ -40,6 +40,8 @@ class SettingsController extends Controller {
 
     /**
      * Get full UI state for admin or personal settings panel.
+     *
+     * @NoAdminRequired
      */
     #[NoAdminRequired]
     public function getState(string $scope): DataResponse {
@@ -81,6 +83,8 @@ class SettingsController extends Controller {
 
     /**
      * Save OAuth 2.0 client credentials or Service Account JSON for the given scope.
+     *
+     * @NoAdminRequired
      */
     #[NoAdminRequired]
     public function saveAccount(string $scope): DataResponse {
@@ -106,6 +110,9 @@ class SettingsController extends Controller {
         }
     }
 
+    /**
+     * @NoAdminRequired
+     */
     #[NoAdminRequired]
     public function disconnectAccount(string $scope): DataResponse {
         try {
@@ -121,6 +128,9 @@ class SettingsController extends Controller {
         }
     }
 
+    /**
+     * @NoAdminRequired
+     */
     #[NoAdminRequired]
     public function testAccount(string $scope): DataResponse {
         try {
@@ -147,6 +157,9 @@ class SettingsController extends Controller {
         }
     }
 
+    /**
+     * @NoAdminRequired
+     */
     #[NoAdminRequired]
     public function saveGeneral(string $scope): DataResponse {
         try {
@@ -173,6 +186,9 @@ class SettingsController extends Controller {
         }
     }
 
+    /**
+     * @NoAdminRequired
+     */
     #[NoAdminRequired]
     public function listDriveFolders(string $scope, string $parentId = 'root'): DataResponse {
         try {
@@ -194,6 +210,9 @@ class SettingsController extends Controller {
         }
     }
 
+    /**
+     * @NoAdminRequired
+     */
     #[NoAdminRequired]
     public function listVolumes(string $scope): DataResponse {
         try {
@@ -206,16 +225,25 @@ class SettingsController extends Controller {
         }
     }
 
+    /**
+     * @NoAdminRequired
+     */
     #[NoAdminRequired]
     public function createVolume(string $scope): DataResponse {
         return $this->saveVolumeInternal($scope, null);
     }
 
+    /**
+     * @NoAdminRequired
+     */
     #[NoAdminRequired]
     public function updateVolume(string $scope, string $id): DataResponse {
         return $this->saveVolumeInternal($scope, $id);
     }
 
+    /**
+     * @NoAdminRequired
+     */
     #[NoAdminRequired]
     public function deleteVolume(string $scope, string $id): DataResponse {
         try {
@@ -231,6 +259,9 @@ class SettingsController extends Controller {
         }
     }
 
+    /**
+     * @NoAdminRequired
+     */
     #[NoAdminRequired]
     public function testVolume(string $scope, string $id): DataResponse {
         try {
@@ -261,6 +292,9 @@ class SettingsController extends Controller {
         }
     }
 
+    /**
+     * @NoAdminRequired
+     */
     #[NoAdminRequired]
     public function clearCache(string $scope): DataResponse {
         try {

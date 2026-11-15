@@ -38,7 +38,12 @@ class AuthController extends Controller {
         $this->stateCache = $cacheFactory->createDistributed('gdrive_volumes_oauth_state');
     }
 
+    /**
+     * @NoAdminRequired
+     * @NoCSRFRequired
+     */
     #[NoAdminRequired]
+    #[NoCSRFRequired]
     public function authorize(string $scope): RedirectResponse {
         $user = $this->userSession->getUser();
         if ($user === null) {
@@ -57,11 +62,13 @@ class AuthController extends Controller {
         }
 
         $nonce = bin2hex(random_bytes(24));
-        $this->stateCache->set('state:' . $nonce, [
+        $statePayload = [
             'scope' => $validScope,
             'uid' => $uid,
             'created' => time(),
-        ], 600);
+        ];
+        $this->configService->saveOAuthState($nonce, $statePayload);
+        $this->stateCache->set('state:' . $nonce, $statePayload, 600);
 
         $redirectUri = $this->urlGenerator->linkToRouteAbsolute(Application::APP_ID . '.auth.callback');
         $authUrl = $this->driveClient->buildAuthorizationUrl((string)$account['client_id'], $redirectUri, $nonce);
@@ -69,6 +76,10 @@ class AuthController extends Controller {
         return new RedirectResponse($authUrl);
     }
 
+    /**
+     * @NoAdminRequired
+     * @NoCSRFRequired
+     */
     #[NoAdminRequired]
     #[NoCSRFRequired]
     public function callback(string $code = '', string $state = '', string $error = ''): RedirectResponse {
@@ -78,8 +89,15 @@ class AuthController extends Controller {
         }
         $uid = $user->getUID();
 
-        $stored = $state !== '' ? $this->stateCache->get('state:' . $state) : null;
+        $stored = null;
         if ($state !== '') {
+            $stored = $this->configService->consumeOAuthState($state);
+            if (!is_array($stored)) {
+                $cached = $this->stateCache->get('state:' . $state);
+                if (is_array($cached)) {
+                    $stored = $cached;
+                }
+            }
             $this->stateCache->remove('state:' . $state);
         }
 
@@ -126,7 +144,19 @@ class AuthController extends Controller {
             ? 'settings.AdminSettings.index'
             : 'settings.PersonalSettings.index';
 
-        $baseUrl = $this->urlGenerator->linkToRoute($route, ['section' => Application::APP_ID]);
+        try {
+            $baseUrl = $this->urlGenerator->linkToRoute($route, ['section' => Application::APP_ID]);
+        } catch (Throwable) {
+            $fallbackPath = $scope === ConfigService::SCOPE_ADMIN
+                ? '/settings/admin/' . Application::APP_ID
+                : '/settings/user/' . Application::APP_ID;
+            try {
+                $baseUrl = $this->urlGenerator->getAbsoluteURL($fallbackPath);
+            } catch (Throwable) {
+                $baseUrl = $fallbackPath;
+            }
+        }
+
         $separator = str_contains($baseUrl, '?') ? '&' : '?';
         $target = $baseUrl . $separator . http_build_query([
             'gdrive_oauth' => $status,
