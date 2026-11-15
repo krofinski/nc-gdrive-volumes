@@ -64,12 +64,16 @@ class SyncCacheCommand extends Command {
 
             try {
                 $folder = $this->driveClient->resolveVolumeRootFolder($vol);
+                $owner = $vol['owner_uid'] !== '' ? (string)$vol['owner_uid'] : null;
+                $children = $this->driveClient->listChildren((string)$vol['scope'], $owner, (string)$folder['id']);
+                $this->parentDirectoryService->warmVolumeMount($vol, $owner);
                 $output->writeln(sprintf(
-                    '<info>[OK] %s (%s) -> remote ID %s mounted at /%s</info>',
+                    '<info>[OK] %s (%s) -> remote ID %s mounted at /%s (%d items in root)</info>',
                     $vol['name'],
                     $volId,
                     $folder['id'],
-                    $vol['local_mount_path']
+                    $vol['local_mount_path'],
+                    count($children)
                 ));
             } catch (Throwable $e) {
                 $hasFailures = true;
