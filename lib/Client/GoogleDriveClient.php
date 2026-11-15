@@ -779,9 +779,6 @@ class GoogleDriveClient {
             ]);
 
             $status = $resp->getStatusCode();
-            if ($status === 200 || $status === 201) {
-                return $this->normalizeItem($this->decodeJsonResponse($resp->getBody(), 'Resumable upload finalization'));
-            }
             if ($status === 308) {
                 $rangeHeader = $resp->getHeader('Range');
                 if (preg_match('/bytes=0-(\d+)/', $rangeHeader, $matches)) {
@@ -792,10 +789,15 @@ class GoogleDriveClient {
                 continue;
             }
 
+            $body = (string)$resp->getBody();
+            if ($status === 200 || $status === 201) {
+                return $this->normalizeItem($this->decodeJsonResponse($body, 'Resumable upload finalization'));
+            }
+
             throw new RuntimeException(sprintf(
                 'Resumable upload chunk failed with HTTP %d: %s',
                 $status,
-                $resp->getBody()
+                $body
             ));
         }
 
@@ -889,10 +891,11 @@ class GoogleDriveClient {
      */
     private function apiJsonRequest(string $scope, ?string $uid, string $method, string $url, array $options = []): array {
         $resp = $this->apiRequest($scope, $uid, $method, $url, $options);
-        if ($resp->getBody() === '') {
+        $body = (string)$resp->getBody();
+        if (trim($body) === '') {
             return [];
         }
-        return $this->decodeJsonResponse($resp->getBody(), $method . ' ' . $url);
+        return $this->decodeJsonResponse($body, $method . ' ' . $url);
     }
 
     /**
@@ -1000,16 +1003,26 @@ class GoogleDriveClient {
             'timeout' => 30,
         ]);
 
-        return $this->decodeJsonResponse($response->getBody(), $context);
+        $body = (string)$response->getBody();
+        return $this->decodeJsonResponse($body, $context);
     }
 
     /**
      * @return array<string, mixed>
      */
     private function decodeJsonResponse(string $body, string $context): array {
-        $decoded = json_decode($body, true);
+        $cleanBody = ltrim($body, "\xEF\xBB\xBF");
+        $decoded = json_decode($cleanBody, true);
         if (!is_array($decoded)) {
-            throw new RuntimeException(sprintf('Invalid JSON response during %s.', $context));
+            $jsonError = json_last_error() !== JSON_ERROR_NONE ? json_last_error_msg() : 'Unexpected JSON type';
+            $snippet = substr(trim($cleanBody), 0, 200);
+            $this->logger->error('Invalid JSON response during {context} ({jsonError}): {snippet}', [
+                'context' => $context,
+                'jsonError' => $jsonError,
+                'snippet' => $snippet,
+            ]);
+            $detail = $snippet !== '' ? ($jsonError . ' — ' . $snippet) : ($jsonError . ' (empty body)');
+            throw new RuntimeException(sprintf('Invalid JSON response during %s (%s).', $context, $detail));
         }
         if (isset($decoded['error'])) {
             $errMsg = is_array($decoded['error'])
