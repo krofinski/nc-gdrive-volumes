@@ -11,6 +11,8 @@ use OCP\AppFramework\Controller;
 use OCP\AppFramework\Http\Attribute\NoAdminRequired;
 use OCP\AppFramework\Http\Attribute\NoCSRFRequired;
 use OCP\AppFramework\Http\RedirectResponse;
+use OCP\EventDispatcher\IEventDispatcher;
+use OCP\Files\Events\InvalidateMountCacheEvent;
 use OCP\ICache;
 use OCP\ICacheFactory;
 use OCP\IGroupManager;
@@ -32,6 +34,7 @@ class AuthController extends Controller {
         private readonly IUserSession $userSession,
         private readonly IGroupManager $groupManager,
         private readonly IURLGenerator $urlGenerator,
+        private readonly IEventDispatcher $eventDispatcher,
         ICacheFactory $cacheFactory,
     ) {
         parent::__construct(Application::APP_ID, $request);
@@ -124,6 +127,12 @@ class AuthController extends Controller {
             $ownerUid = $scope === ConfigService::SCOPE_PERSONAL ? $uid : null;
             $redirectUri = $this->urlGenerator->linkToRouteAbsolute(Application::APP_ID . '.auth.callback');
             $this->driveClient->exchangeAuthorizationCode($scope, $ownerUid, $code, $redirectUri);
+            try {
+                $this->eventDispatcher->dispatchTyped(
+                    new InvalidateMountCacheEvent($scope === ConfigService::SCOPE_PERSONAL ? $user : null)
+                );
+            } catch (Throwable) {
+            }
             return $this->redirectToSettings($scope, 'success', 'Google Drive connected successfully.');
         } catch (Throwable $e) {
             return $this->redirectToSettings($scope, 'error', $e->getMessage());

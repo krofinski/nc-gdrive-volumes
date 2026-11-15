@@ -6,12 +6,14 @@ style('gdrive_volumes', 'settings');
 
 $scope = (string)($_['scope'] ?? 'personal');
 $redirectUri = (string)($_['redirectUri'] ?? '');
+$apiBaseUrl = (string)($_['apiBaseUrl'] ?? '');
 $personalAllowed = (bool)($_['personalMountsAllowed'] ?? true);
 ?>
 <div id="gdrive-volumes-app"
      class="section gdrive-volumes-section"
      data-scope="<?php p($scope); ?>"
      data-redirect-uri="<?php p($redirectUri); ?>"
+     data-api-base="<?php p($apiBaseUrl); ?>"
      data-personal-allowed="<?php p($personalAllowed ? '1' : '0'); ?>">
 
     <h2><?php p($l->t('Google Drive Volumes')); ?></h2>
@@ -109,6 +111,8 @@ $personalAllowed = (bool)($_['personalMountsAllowed'] ?? true);
                     </button>
                 </div>
             </div>
+
+            <div id="gdrive-account-feedback" class="gdrive-inline-feedback hidden" role="status" aria-live="polite"></div>
         </div>
 
         <!-- Card 2: Common Directory Defaults & Cache -->
@@ -152,6 +156,8 @@ $personalAllowed = (bool)($_['personalMountsAllowed'] ?? true);
                     <?php p($l->t('Clear Metadata Cache')); ?>
                 </button>
             </div>
+
+            <div id="gdrive-general-feedback" class="gdrive-inline-feedback hidden" role="status" aria-live="polite"></div>
         </div>
 
         <!-- Card 3: Create / Edit Volume Form -->
@@ -277,6 +283,8 @@ $personalAllowed = (bool)($_['personalMountsAllowed'] ?? true);
                         <?php p($l->t('Cancel Edit')); ?>
                     </button>
                 </div>
+
+                <div id="gdrive-volume-feedback" class="gdrive-inline-feedback hidden" role="status" aria-live="polite"></div>
             </form>
         </div>
 

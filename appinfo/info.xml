@@ -13,7 +13,7 @@ Features:
 - Interactive Google Drive folder browser and optional auto-creation of remote folders
 - Per-volume read-only mode, independent virtual disk quota, and Google Docs export format
 - Metadata/path cache with configurable TTL, resumable chunked uploads, and OCC commands]]></description>
-    <version>1.0.0</version>
+    <version>1.0.2</version>
     <licence>agpl</licence>
     <author mail="krofinski@users.noreply.github.com" homepage="https://github.com/krofinski">krofinski</author>
     <namespace>GDriveVolumes</namespace>

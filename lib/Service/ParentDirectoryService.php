@@ -59,12 +59,55 @@ class ParentDirectoryService {
             return;
         }
 
+        foreach ($this->collectTargetUids($volume, $actingUid) as $uid) {
+            $this->ensurePathForUid($uid, $parentDir);
+        }
+    }
+
+    /**
+     * Warm the parent directory and mounted volume node for target users so both
+     * /Gdrive and /Gdrive/Volume_1 are immediately registered in Nextcloud's filecache and oc_mounts.
+     *
+     * @param array<string, mixed> $volume
+     */
+    public function warmVolumeMount(array $volume, ?string $actingUid = null): void {
+        if (empty($volume['enabled'])) {
+            return;
+        }
+
+        $parentDir = trim((string)($volume['local_parent_dir'] ?? ''), '/');
+        $mountPath = trim((string)($volume['local_mount_path'] ?? ''), '/');
+
+        foreach ($this->collectTargetUids($volume, $actingUid) as $uid) {
+            try {
+                if ($parentDir !== '') {
+                    $this->ensurePathForUid($uid, $parentDir);
+                }
+                $userFolder = $this->rootFolder->getUserFolder($uid);
+                if ($parentDir !== '' && $userFolder->nodeExists($parentDir)) {
+                    $userFolder->get($parentDir);
+                }
+                if ($mountPath !== '' && $userFolder->nodeExists($mountPath)) {
+                    $userFolder->get($mountPath);
+                }
+            } catch (\Throwable $e) {
+                $this->logger->debug('Unable to warm volume mount "{path}" for user "{uid}": {msg}', [
+                    'path' => $mountPath,
+                    'uid' => $uid,
+                    'msg' => $e->getMessage(),
+                ]);
+            }
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $volume
+     * @return list<string>
+     */
+    private function collectTargetUids(array $volume, ?string $actingUid = null): array {
         if (($volume['scope'] ?? ConfigService::SCOPE_ADMIN) === ConfigService::SCOPE_PERSONAL) {
             $ownerUid = (string)($volume['owner_uid'] ?? '');
-            if ($ownerUid !== '') {
-                $this->ensurePathForUid($ownerUid, $parentDir);
-            }
-            return;
+            return $ownerUid !== '' ? [$ownerUid] : [];
         }
 
         $targetUids = [];
@@ -94,9 +137,7 @@ class ParentDirectoryService {
             }
         }
 
-        foreach (array_keys($targetUids) as $uid) {
-            $this->ensurePathForUid($uid, $parentDir);
-        }
+        return array_map('strval', array_keys($targetUids));
     }
 
     /**

@@ -8,7 +8,10 @@ use OC\Files\Storage\Common;
 use OCA\GDriveVolumes\Client\GoogleDriveClient;
 use OCA\GDriveVolumes\Service\ConfigService;
 use OCA\GDriveVolumes\Service\MetadataCacheService;
+use OCP\Constants;
+use OCP\Files\Cache\ICache;
 use OCP\Files\FileInfo;
+use OCP\Files\Storage\IStorage;
 use Psr\Log\LoggerInterface;
 
 /**
@@ -32,6 +35,7 @@ class GDriveVolumeStorage extends Common {
     private bool $trashOnDelete;
     private string $cacheNs;
     private ?string $resolvedRootId = null;
+    private bool $rootCacheSeeded = false;
 
     /**
      * @param array<string, mixed> $params
@@ -62,6 +66,41 @@ class GDriveVolumeStorage extends Common {
     public function getId(): string {
         $identity = $this->scope . ':' . ($this->ownerUid ?? '') . ':' . $this->volumeId;
         return 'gdrive_vol::' . substr(hash('sha256', $identity), 0, 48);
+    }
+
+    /**
+     * Ensure an unscanned root entry exists in oc_filecache so UserMountCache always
+     * records subdirectory mounts (e.g. /Gdrive/Volume_1) in oc_mounts.
+     *
+     * @param string $path
+     * @param ?IStorage $storage
+     */
+    public function getCache($path = '', $storage = null): ICache {
+        $cache = parent::getCache($path, $storage);
+        if (!$this->rootCacheSeeded) {
+            $this->rootCacheSeeded = true;
+            try {
+                if ($cache->getId('') === -1) {
+                    $now = time();
+                    $cache->put('', [
+                        'mimetype' => 'httpd/unix-directory',
+                        'mtime' => $now,
+                        'storage_mtime' => $now,
+                        'size' => -1,
+                        'etag' => substr(md5($this->getId() . ':init'), 0, 16),
+                        'permissions' => $this->readOnly
+                            ? (Constants::PERMISSION_READ | Constants::PERMISSION_SHARE)
+                            : Constants::PERMISSION_ALL,
+                    ]);
+                }
+            } catch (\Throwable $e) {
+                $this->logger->debug('Unable to seed root cache entry for Google Drive volume "{id}": {msg}', [
+                    'id' => $this->volumeId,
+                    'msg' => $e->getMessage(),
+                ]);
+            }
+        }
+        return $cache;
     }
 
     public function test(): bool {

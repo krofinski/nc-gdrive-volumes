@@ -14,6 +14,8 @@ use OCP\AppFramework\Controller;
 use OCP\AppFramework\Http;
 use OCP\AppFramework\Http\Attribute\NoAdminRequired;
 use OCP\AppFramework\Http\DataResponse;
+use OCP\EventDispatcher\IEventDispatcher;
+use OCP\Files\Events\InvalidateMountCacheEvent;
 use OCP\IGroup;
 use OCP\IGroupManager;
 use OCP\IRequest;
@@ -34,6 +36,7 @@ class SettingsController extends Controller {
         private readonly IGroupManager $groupManager,
         private readonly IUserManager $userManager,
         private readonly IURLGenerator $urlGenerator,
+        private readonly IEventDispatcher $eventDispatcher,
     ) {
         parent::__construct(Application::APP_ID, $request);
     }
@@ -101,6 +104,7 @@ class SettingsController extends Controller {
             ]);
 
             $this->cacheService->invalidateNamespace(MetadataCacheService::scopeNamespace($validScope, $ownerUid));
+            $this->invalidateMountCache($validScope === ConfigService::SCOPE_PERSONAL ? $ownerUid : null);
 
             return new DataResponse([
                 'account' => $this->configService->getPublicAccountSummary($validScope, $ownerUid),
@@ -119,6 +123,7 @@ class SettingsController extends Controller {
             [$validScope, $ownerUid] = $this->assertScopeAccess($scope);
             $this->configService->disconnectAccount($validScope, $ownerUid);
             $this->cacheService->invalidateNamespace(MetadataCacheService::scopeNamespace($validScope, $ownerUid));
+            $this->invalidateMountCache($validScope === ConfigService::SCOPE_PERSONAL ? $ownerUid : null);
 
             return new DataResponse([
                 'account' => $this->configService->getPublicAccountSummary($validScope, $ownerUid),
@@ -146,11 +151,24 @@ class SettingsController extends Controller {
                 ]);
             }
 
+            $rootFolders = [];
+            try {
+                $rootFolders = array_slice(
+                    $this->driveClient->listSubfolders($validScope, $ownerUid, 'root'),
+                    0,
+                    30
+                );
+            } catch (Throwable) {
+                $rootFolders = [];
+            }
+
             return new DataResponse([
                 'ok' => true,
                 'user' => $about['user'] ?? [],
                 'storageQuota' => $about['storageQuota'] ?? [],
                 'account' => $this->configService->getPublicAccountSummary($validScope, $ownerUid),
+                'rootFolders' => $rootFolders,
+                'volumeCount' => count($this->configService->getVolumes($validScope, $ownerUid)),
             ]);
         } catch (Throwable $e) {
             return $this->errorResponse($e, Http::STATUS_BAD_REQUEST);
@@ -253,6 +271,7 @@ class SettingsController extends Controller {
                 return new DataResponse(['message' => 'Volume not found.'], Http::STATUS_NOT_FOUND);
             }
             $this->cacheService->invalidateNamespace(MetadataCacheService::volumeNamespace($id));
+            $this->invalidateMountCache($validScope === ConfigService::SCOPE_PERSONAL ? $ownerUid : null);
             return new DataResponse(['deleted' => true]);
         } catch (Throwable $e) {
             return $this->errorResponse($e);
@@ -276,7 +295,10 @@ class SettingsController extends Controller {
             $this->cacheService->invalidateNamespace(MetadataCacheService::volumeNamespace($id));
 
             $currentUser = $this->userSession->getUser();
-            $this->parentDirectoryService->ensureForVolume($volume, $currentUser?->getUID());
+            $currentUid = $currentUser?->getUID();
+            $this->invalidateMountCache($validScope === ConfigService::SCOPE_PERSONAL ? $ownerUid : null);
+            $this->parentDirectoryService->ensureForVolume($volume, $currentUid);
+            $this->parentDirectoryService->warmVolumeMount($volume, $currentUid);
 
             return new DataResponse([
                 'ok' => true,
@@ -303,6 +325,7 @@ class SettingsController extends Controller {
             foreach ($this->configService->getVolumes($validScope, $ownerUid) as $vol) {
                 $this->cacheService->invalidateNamespace(MetadataCacheService::volumeNamespace((string)$vol['id']));
             }
+            $this->invalidateMountCache($validScope === ConfigService::SCOPE_PERSONAL ? $ownerUid : null);
             return new DataResponse(['cleared' => true]);
         } catch (Throwable $e) {
             return $this->errorResponse($e);
@@ -328,7 +351,9 @@ class SettingsController extends Controller {
                 }
             }
 
+            $this->invalidateMountCache($validScope === ConfigService::SCOPE_PERSONAL ? $ownerUid : null);
             $this->parentDirectoryService->ensureForVolume($volume, $currentUid);
+            $this->parentDirectoryService->warmVolumeMount($volume, $currentUid);
 
             return new DataResponse([
                 'volume' => $volume,
@@ -368,6 +393,14 @@ class SettingsController extends Controller {
         }
 
         return [$validScope, $uid, $uid];
+    }
+
+    private function invalidateMountCache(?string $uid = null): void {
+        try {
+            $user = ($uid !== null && $uid !== '') ? $this->userManager->get($uid) : null;
+            $this->eventDispatcher->dispatchTyped(new InvalidateMountCacheEvent($user));
+        } catch (Throwable) {
+        }
     }
 
     private function errorResponse(Throwable $e, int $defaultStatus = Http::STATUS_BAD_REQUEST): DataResponse {
