@@ -995,7 +995,7 @@ class GDriveVolumeStorage extends Common {
             $childrenMap = $this->getFolderChildrenMap($normalizedPath, $folderId);
             $cache = $this->getCache($normalizedPath);
             $cachedEntry = $cache->get($normalizedPath);
-            if (!$cachedEntry || (int)($cachedEntry['size'] ?? -1) === -1) {
+            if (!$cachedEntry || (int)($cachedEntry['storage_mtime'] ?? 0) <= 0) {
                 return true;
             }
 
