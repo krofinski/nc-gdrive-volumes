@@ -27,11 +27,11 @@ class Application extends App implements IBootstrap {
     }
 
     public function boot(IBootContext $context): void {
-        $server = $context->getServerContainer();
-        /** @var IMountProviderCollection $mountProviderCollection */
-        $mountProviderCollection = $server->get(IMountProviderCollection::class);
-        $mountProviderCollection->registerMountProvider(
-            $server->get(GDriveMountProvider::class)
-        );
+        $context->injectFn(function (
+            IMountProviderCollection $mountProviderCollection,
+            GDriveMountProvider $mountProvider,
+        ): void {
+            $mountProviderCollection->registerProvider($mountProvider);
+        });
     }
 }

@@ -64,12 +64,16 @@ class GDriveMountProvider implements IMountProvider {
                 'mount_id' => 'gdrive_vol_' . $volume['id'],
             ];
 
-            $storage = new GDriveVolumeStorage($mountOptions);
             $mounts[] = new MountPoint(
-                $storage,
+                GDriveVolumeStorage::class,
                 $mountPointPath,
                 $mountOptions,
-                $storageFactory
+                $storageFactory,
+                [
+                    'encrypt' => true,
+                    'previews' => true,
+                    'enable_sharing' => true,
+                ]
             );
         }
 
