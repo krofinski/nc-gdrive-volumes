@@ -10,6 +10,7 @@ use OCA\GDriveVolumes\Service\ConfigService;
 use OCA\GDriveVolumes\Service\MetadataCacheService;
 use OCA\GDriveVolumes\Storage\GDriveVolumeStorage;
 use OCP\Files\Config\IMountProvider;
+use OCP\Files\Config\IUserMountCache;
 use OCP\Files\Mount\IMountPoint;
 use OCP\Files\Storage\IStorageFactory;
 use OCP\IUser;
@@ -24,6 +25,7 @@ class GDriveMountProvider implements IMountProvider {
         private readonly ConfigService $configService,
         private readonly GoogleDriveClient $driveClient,
         private readonly MetadataCacheService $cacheService,
+        private readonly IUserMountCache $userMountCache,
         private readonly LoggerInterface $logger,
     ) {
     }
@@ -80,6 +82,60 @@ class GDriveMountProvider implements IMountProvider {
             );
         }
 
+        $this->reconcileUserMountCache($user, $mounts);
         return $mounts;
+    }
+
+    /**
+     * Remove stale oc_mounts rows whose root_id or storage_id changed before SetupManager::registerMounts() runs.
+     *
+     * @param IMountPoint[] $mounts
+     */
+    private function reconcileUserMountCache(IUser $user, array $mounts): void {
+        if ($mounts === []) {
+            return;
+        }
+
+        try {
+            $uid = $user->getUID();
+            $cachedMounts = $this->userMountCache->getMountsForUser($user);
+            $cachedByMountPoint = [];
+            foreach ($cachedMounts as $cachedMount) {
+                $cachedByMountPoint[$cachedMount->getMountPoint()] = $cachedMount;
+            }
+
+            $needsClear = false;
+            foreach ($mounts as $mp) {
+                $storage = $mp->getStorage();
+                if ($storage === null) {
+                    continue;
+                }
+                // Ensure '' root cache entry exists in oc_filecache before reading root_id/storage_id
+                $storage->getCache('');
+                $rootId = $mp->getStorageRootId();
+                $numericStorageId = $mp->getNumericStorageId();
+                $mountPoint = $mp->getMountPoint();
+
+                if (isset($cachedByMountPoint[$mountPoint])) {
+                    $existing = $cachedByMountPoint[$mountPoint];
+                    if ($existing->getRootId() !== $rootId || $existing->getStorageId() !== $numericStorageId) {
+                        $this->userMountCache->removeUserStorageMount($existing->getStorageId(), $uid);
+                        if (method_exists($this->userMountCache, 'removeMount')) {
+                            $this->userMountCache->removeMount($mountPoint, $user);
+                        }
+                        $needsClear = true;
+                    }
+                }
+            }
+
+            if ($needsClear) {
+                $this->userMountCache->clear();
+            }
+        } catch (\Throwable $e) {
+            $this->logger->debug('Unable to reconcile oc_mounts for user "{uid}": {msg}', [
+                'uid' => $user->getUID(),
+                'msg' => $e->getMessage(),
+            ]);
+        }
     }
 }
