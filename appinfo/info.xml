@@ -1,0 +1,41 @@
+<?xml version="1.0"?>
+<info xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:noNamespaceSchemaLocation="https://apps.nextcloud.com/schema/apps/info.xsd">
+    <id>gdrive_volumes</id>
+    <name>Google Drive Volumes</name>
+    <summary>Mount Google Drive subdirectories as independent external disks under a common Nextcloud folder</summary>
+    <description><![CDATA[Mount multiple Google Drive subdirectories (e.g., NextCloud/Volume_1, NextCloud/Volume_2) as independent external virtual disks inside Nextcloud under a configurable common directory and subdirectory (e.g., Gdrive/Volume_1, Gdrive/Volume_2).
+
+Features:
+- Single Google Drive account binding (OAuth 2.0 or Service Account JSON) per admin or personal scope
+- Multiple independent volume mappings from remote subdirectories or Folder IDs
+- Configurable common parent folder + subdirectory per disk (e.g., Gdrive/Volume_1)
+- Interactive Google Drive folder browser and optional auto-creation of remote folders
+- Per-volume read-only mode, independent virtual disk quota, and Google Docs export format
+- Metadata/path cache with configurable TTL, resumable chunked uploads, and OCC commands]]></description>
+    <version>1.0.0</version>
+    <licence>agpl</licence>
+    <author mail="krofinski@users.noreply.github.com" homepage="https://github.com/krofinski">krofinski</author>
+    <namespace>GDriveVolumes</namespace>
+    <category>files</category>
+    <category>integration</category>
+    <website>https://github.com/krofinski/nc-gdrive-volumes</website>
+    <bugs>https://github.com/krofinski/nc-gdrive-volumes/issues</bugs>
+    <repository type="git">https://github.com/krofinski/nc-gdrive-volumes.git</repository>
+    <dependencies>
+        <php min-version="8.2" max-version="8.5"/>
+        <nextcloud min-version="30" max-version="35"/>
+    </dependencies>
+    <settings>
+        <admin>OCA\GDriveVolumes\Settings\AdminSettings</admin>
+        <admin-section>OCA\GDriveVolumes\Settings\AdminSection</admin-section>
+        <personal>OCA\GDriveVolumes\Settings\PersonalSettings</personal>
+        <personal-section>OCA\GDriveVolumes\Settings\PersonalSection</personal-section>
+    </settings>
+    <commands>
+        <command>OCA\GDriveVolumes\Command\ListVolumesCommand</command>
+        <command>OCA\GDriveVolumes\Command\MountVolumeCommand</command>
+        <command>OCA\GDriveVolumes\Command\RemoveVolumeCommand</command>
+        <command>OCA\GDriveVolumes\Command\SyncCacheCommand</command>
+    </commands>
+</info>

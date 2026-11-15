@@ -1,0 +1,7 @@
+.DS_Store
+Thumbs.db
+/build/
+/vendor/
+*.tar.gz
+*.zip
+.phpunit.result.cache

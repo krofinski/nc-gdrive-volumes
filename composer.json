@@ -1,0 +1,14 @@
+{
+    "name": "krofinski/nc-gdrive-volumes",
+    "description": "Nextcloud app to mount Google Drive subdirectories as independent external disks under a common folder",
+    "license": "AGPL-3.0-or-later",
+    "type": "project",
+    "require": {
+        "php": "^8.2"
+    },
+    "autoload": {
+        "psr-4": {
+            "OCA\\GDriveVolumes\\": "lib/"
+        }
+    }
+}
