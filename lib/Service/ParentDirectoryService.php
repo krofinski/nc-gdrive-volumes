@@ -61,95 +61,65 @@ class ParentDirectoryService {
     public function syncAndWarmUserMounts(IUser $user, bool $forceScan = false): void {
         $uid = $user->getUID();
         $volumes = $this->configService->getActiveVolumesForUser($user);
-        foreach ($volumes as $volume) {
-            $parentDir = (string)($volume['local_parent_dir'] ?? '');
-            if ($parentDir !== '') {
-                $this->ensurePathForUid($uid, $parentDir);
-            }
-        }
+        $mounts = [];
+        $repairedMountPoints = [];
 
         try {
+            // Reconcile oc_mounts before ensuring local parent folders so SetupManager
+            // never registers mounts against stale root_id/storage_id rows.
             $mounts = $this->mountProvider->getMountsForUser($user, $this->storageFactory);
-            if ($mounts === []) {
-                return;
-            }
-
-            $cachedMounts = $this->userMountCache->getMountsForUser($user);
-            $cachedByMountPoint = [];
-            foreach ($cachedMounts as $cachedMount) {
-                $cachedByMountPoint[$cachedMount->getMountPoint()] = $cachedMount;
-            }
-
-            $repairedMountPoints = [];
-            $cacheNeedsClear = false;
-
-            foreach ($mounts as $mp) {
-                $mountPoint = $mp->getMountPoint();
-                try {
-                    $storage = $mp->getStorage();
-                    if ($storage === null) {
-                        continue;
-                    }
-                    // Ensure '' root cache entry exists in oc_filecache before reading root_id/storage_id
-                    $storage->getCache('');
-                    $rootId = $mp->getStorageRootId();
-                    $numericStorageId = $mp->getNumericStorageId();
-
-                    if (!isset($cachedByMountPoint[$mountPoint])) {
-                        $repairedMountPoints[$mountPoint] = true;
-                    } else {
-                        $existingCached = $cachedByMountPoint[$mountPoint];
-                        if ($existingCached->getRootId() !== $rootId || $existingCached->getStorageId() !== $numericStorageId) {
-                            $this->userMountCache->removeUserStorageMount($existingCached->getStorageId(), $uid);
-                            if (method_exists($this->userMountCache, 'removeMount')) {
-                                $this->userMountCache->removeMount($mountPoint, $user);
-                            }
-                            $cacheNeedsClear = true;
-                            $repairedMountPoints[$mountPoint] = true;
-                        }
-                    }
-
-                    $this->mountManager->addMount($mp);
-                } catch (\Throwable $e) {
-                    $this->logger->warning('Unable to prepare Google Drive mount "{mount}" for user "{uid}": {msg}', [
-                        'mount' => $mountPoint,
-                        'uid' => $uid,
-                        'msg' => $e->getMessage(),
-                    ]);
+            if ($mounts !== []) {
+                $cachedMounts = $this->userMountCache->getMountsForUser($user);
+                $cachedByMountPoint = [];
+                foreach ($cachedMounts as $cachedMount) {
+                    $cachedByMountPoint[$cachedMount->getMountPoint()] = $cachedMount;
                 }
-            }
 
-            if ($cacheNeedsClear) {
-                $this->userMountCache->clear();
-            }
+                $cacheNeedsClear = false;
+                foreach ($mounts as $mp) {
+                    $mountPoint = $mp->getMountPoint();
+                    try {
+                        $storage = $mp->getStorage();
+                        if ($storage === null) {
+                            continue;
+                        }
+                        // Ensure '' root cache entry exists in oc_filecache before reading root_id/storage_id
+                        $storage->getCache('');
+                        $rootId = $mp->getStorageRootId();
+                        $numericStorageId = $mp->getNumericStorageId();
 
-            $this->userMountCache->registerMounts($user, $mounts, [GDriveMountProvider::class]);
+                        if (!isset($cachedByMountPoint[$mountPoint])) {
+                            $repairedMountPoints[$mountPoint] = true;
+                        } else {
+                            $existingCached = $cachedByMountPoint[$mountPoint];
+                            if ($existingCached->getRootId() !== $rootId || $existingCached->getStorageId() !== $numericStorageId) {
+                                $this->userMountCache->removeUserStorageMount($existingCached->getStorageId(), $uid);
+                                if (method_exists($this->userMountCache, 'removeMount')) {
+                                    $this->userMountCache->removeMount($mountPoint, $user);
+                                }
+                                $cacheNeedsClear = true;
+                                $repairedMountPoints[$mountPoint] = true;
+                            }
+                        }
 
-            if ($repairedMountPoints !== [] || $forceScan) {
-                $this->eventDispatcher->dispatchTyped(new InvalidateMountCacheEvent($user));
-            }
-
-            foreach ($mounts as $mp) {
-                $mountPoint = $mp->getMountPoint();
-                try {
-                    $storage = $mp->getStorage();
-                    if ($storage === null) {
-                        continue;
+                        $this->mountManager->addMount($mp);
+                    } catch (\Throwable $e) {
+                        $this->logger->warning('Unable to prepare Google Drive mount "{mount}" for user "{uid}": {msg}', [
+                            'mount' => $mountPoint,
+                            'uid' => $uid,
+                            'msg' => $e->getMessage(),
+                        ]);
                     }
-                    $rootEntry = $storage->getCache('')->get('');
-                    $needsInitialScan = !$rootEntry
-                        || (int)($rootEntry['size'] ?? -1) === -1
-                        || isset($repairedMountPoints[$mountPoint]);
+                }
 
-                    if ($forceScan || $needsInitialScan) {
-                        $storage->getScanner()->scan('', IScanner::SCAN_SHALLOW);
-                    }
-                } catch (\Throwable $e) {
-                    $this->logger->debug('Unable to shallow-scan Google Drive mount "{mount}" for user "{uid}": {msg}', [
-                        'mount' => $mountPoint,
-                        'uid' => $uid,
-                        'msg' => $e->getMessage(),
-                    ]);
+                if ($cacheNeedsClear) {
+                    $this->userMountCache->clear();
+                }
+
+                $this->userMountCache->registerMounts($user, $mounts, [GDriveMountProvider::class]);
+
+                if ($repairedMountPoints !== [] || $forceScan) {
+                    $this->eventDispatcher->dispatchTyped(new InvalidateMountCacheEvent($user));
                 }
             }
         } catch (\Throwable $e) {
@@ -157,6 +127,37 @@ class ParentDirectoryService {
                 'uid' => $uid,
                 'msg' => $e->getMessage(),
             ]);
+        }
+
+        foreach ($volumes as $volume) {
+            $parentDir = (string)($volume['local_parent_dir'] ?? '');
+            if ($parentDir !== '') {
+                $this->ensurePathForUid($uid, $parentDir);
+            }
+        }
+
+        foreach ($mounts as $mp) {
+            $mountPoint = $mp->getMountPoint();
+            try {
+                $storage = $mp->getStorage();
+                if ($storage === null) {
+                    continue;
+                }
+                $rootEntry = $storage->getCache('')->get('');
+                $needsInitialScan = !$rootEntry
+                    || (int)($rootEntry['storage_mtime'] ?? 0) <= 0
+                    || isset($repairedMountPoints[$mountPoint]);
+
+                if ($forceScan || $needsInitialScan) {
+                    $storage->getScanner()->scan('', IScanner::SCAN_SHALLOW);
+                }
+            } catch (\Throwable $e) {
+                $this->logger->debug('Unable to shallow-scan Google Drive mount "{mount}" for user "{uid}": {msg}', [
+                    'mount' => $mountPoint,
+                    'uid' => $uid,
+                    'msg' => $e->getMessage(),
+                ]);
+            }
         }
     }
 
